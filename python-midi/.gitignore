@@ -1,0 +1,8 @@
+build
+*.pyc
+.coverage
+.*.sw?
+*egg*
+__pycache__
+docs/_build/
+dist

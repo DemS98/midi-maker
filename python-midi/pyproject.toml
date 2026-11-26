@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "python-midi"
+version = "1.0.0"
+description = "Python MIDI library for reading, writing, and manipulating MIDI files"
+authors = [{name = "Giles Hall", email = "giles@polymerase.org"}]
+license = "MIT"
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: MIDI",
+]
+
+[project.urls]
+Documentation = "https://python-midi.readthedocs.io/"
+Repository = "https://github.com/vishnubob/python-midi"
+Issues = "https://github.com/vishnubob/python-midi/issues"
+
+[project.scripts]
+mididump = "midi.scripts.mididump:main"
+midiplay = "midi.scripts.midiplay:main"
+mididumphw = "midi.scripts.mididumphw:main"
+midirecord = "midi.scripts.midirecord:main"
+midilisten = "midi.scripts.midilisten:main"
+
+[project.optional-dependencies]
+docs = [
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+    "sphinx-autodoc-typehints>=1.25",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"midi" = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
