@@ -3,8 +3,9 @@
 set -e
 
 help() {
-    echo "./generate-midi.sh [sheet-image]"
-    echo "Example: ./generate-midi.sh bach.png"
+    echo "./generate-midi.sh sheet-image [more-pages...]"
+    echo "Pages are read in the order given and joined into one MIDI file."
+    echo "Example: ./generate-midi.sh bach-page1.png bach-page2.png"
 }
 
 init() {
@@ -25,8 +26,8 @@ run_agent() {
         init
     fi
 
-    # The path goes in as an argument and the heredoc is quoted, so the shell never rewrites the Python code.
-    python - "$1" <<'EOF'
+    # The paths go in as arguments and the heredoc is quoted, so the shell never rewrites the Python code.
+    python - "$@" <<'EOF'
 import asyncio
 import logging
 import sys
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_SECONDS = 60
 
 
-async def main(file: str):
+async def main(files: list[str]):
     logging.basicConfig(format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
     # Only this app's messages at INFO: libraries like httpx log every request at that level.
     for name in (__name__, "src.agent"):
@@ -52,14 +53,16 @@ async def main(file: str):
 
     graph.get_graph().draw_mermaid_png(output_file_path="graph.png")
 
-    mime = MimeTypes().guess_type(file)[0]
-
-    if not mime or not mime.startswith("image/"):
-        logger.error("%s is not an image!", file)
+    mimes = [MimeTypes().guess_type(file)[0] for file in files]
+    not_images = [file for file, mime in zip(files, mimes) if not mime or not mime.startswith("image/")]
+    if not_images:
+        logger.error("Not an image: %s", ", ".join(not_images))
         return
 
-    with open(file, "rb") as image_file:
-        image = b64encode(image_file.read()).decode("utf-8")
+    pages = []
+    for file, mime in zip(files, mimes):
+        with open(file, "rb") as image_file:
+            pages.append({"image": b64encode(image_file.read()).decode("utf-8"), "mime_type": mime})
 
     start = time.monotonic()
     lines_total, lines_done = None, 0
@@ -72,9 +75,9 @@ async def main(file: str):
 
     ticker = asyncio.create_task(heartbeat())
     try:
-        async for update in graph.astream({"sheet": image, "mime_type": mime}):
+        async for update in graph.astream({"pages": pages}):
             for node, values in update.items():
-                if node == "split_page":
+                if node == "split_pages":
                     lines_total = len(values["lines"])
                 elif node == "transcribe_line":
                     lines_done += 1
@@ -85,11 +88,11 @@ async def main(file: str):
     logger.info("Finished in %s.", elapsed(start))
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1]))
+    asyncio.run(main(sys.argv[1:]))
 EOF
 }
 
 case "$1" in
     ""|help|-h|--help) help ;;
-    *) run_agent "$1" ;;
+    *) run_agent "$@" ;;
 esac

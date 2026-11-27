@@ -12,6 +12,7 @@ Run everything from the repo root. The code imports `src.agent...`, and output p
 
 ```sh
 ./generate-midi.sh path/to/sheet.png   # full run; creates .venv and installs requirements.txt the first time
+./generate-midi.sh p1.png p2.png       # several pages, in order, joined into one output.mid
 ```
 
 - A run writes `output.mid` (`tools.OUTPUT_PATH`) and redraws `graph.png` (a Mermaid render of the graph, gitignored) in the current directory. A full run takes several minutes at `high` reasoning effort.
@@ -44,19 +45,21 @@ Run everything from the repo root. The code imports `src.agent...`, and output p
 
 ### Graph (`src/agent/graph.py`)
 
-1. **`read_layout`**: one call to the cheap model with the whole page. It returns `PageLayout`: whether the image is music, tempo, starting meter, and the staves of one system with their clefs and GM programs. If the image is not music, the graph ends here.
-2. **`split_page`**: deterministic, in `imaging.split_systems`, with no model involved.
+The input is `AgentState.pages`, a list of `{image, mime_type}` (base64), one per page in playing order.
+
+1. **`read_layout`**: one call to the cheap model with the **first page only**; the layout applies to every page. It returns `PageLayout`: whether the image is music, tempo, starting meter, and the staves of one system with their clefs and GM programs. If the image is not music, the graph ends here.
+2. **`split_pages`**: deterministic, in `imaging.split_systems` run on each page, with no model involved. It produces one flat `lines: list[Line]` in reading order; each `Line` records its page, its index on the page, and `whole_page`.
    - It finds staff lines as thin horizontal ridges in the pixels.
    - It groups staves into systems by checking for barlines that span the gap between them. The group size must match `len(layout.staves)`.
    - It upscales each system to about 16 px staff spacing.
    - It counts bars from barlines that run the full height of the system. This returns `None` for single-staff systems, where a long stem can't be told apart from a barline.
-   - If splitting fails, the whole page is sent as one "line" (`whole_page=True`).
-3. **`transcribe_line`**: one parallel run per line, started with `Send`, using the best model.
+   - If splitting a page fails, that whole page is sent as one "line" (`whole_page=True`). This is per page: other pages are still split.
+3. **`transcribe_line`**: one parallel run per line of every page, started with `Send`, using the best model. Only the first line of the first page gets the pickup / opening `time_change` hint. Debug files are named `line<n>` for one page and `page<p>_line<n>` for several.
    - The model returns a `SystemTranscription`.
    - `notation.check_system` checks it: bar numbering, staves per bar, and voice durations against the meter.
    - Any errors are sent back with `RETRY_PROMPT`, up to `MAX_RETRIES` times, and the attempt with the fewest errors is kept.
    - The bar count from the barlines is only checked on attempt 1 and is never put in the prompt, because the model would anchor on it. A mismatch only asks the model to recount, since barline detection can also be wrong.
-4. **`render_midi`**: sorts the transcriptions by line index, runs `notation.to_score`, then `tools.write_midi`.
+4. **`render_midi`**: sorts the transcriptions by their position in `lines` (so pages play in order), runs `notation.to_score` on all of them as one piece, then `tools.write_midi`.
 
 `AgentState.transcriptions` uses an `operator.add` reducer because parallel lines finish in any order.
 

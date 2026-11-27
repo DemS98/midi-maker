@@ -8,9 +8,9 @@ midi-maker is a [LangGraph](https://github.com/langchain-ai/langgraph) pipeline 
 
 ```mermaid
 flowchart LR
-    img["Sheet image"] --> layout["Read layout<br/>(model)"]
+    img["Sheet images<br/>(one per page)"] --> layout["Read layout<br/>(model, first page)"]
     layout -->|"not sheet music"| stop(["Stop"])
-    layout --> split["Split into lines<br/>(image processing)"]
+    layout --> split["Split pages into lines<br/>(image processing)"]
     split --> l1["Transcribe line 1<br/>(model)"]
     split --> l2["Transcribe line 2<br/>(model)"]
     split --> ln["Transcribe line N<br/>(model)"]
@@ -20,10 +20,10 @@ flowchart LR
     render --> out[("output.mid")]
 ```
 
-1. **Read layout:** a small model looks at the whole page and reports the tempo, the time signature, and the staves of each line, with their clefs and instruments.
-2. **Split into lines:** image processing finds the staff lines, crops out each line (system), enlarges it, and counts its bars from the barlines. If the page can't be split, the whole page is read in one pass.
-3. **Transcribe lines:** a larger model reads every line in parallel, bar by bar.
-4. **Convert to notes:** code turns the transcription into timed notes and writes `output.mid`.
+1. **Read layout:** a small model looks at the first page and reports the tempo, the time signature, and the staves of each line, with their clefs and instruments. These apply to every page.
+2. **Split into lines:** on each page, image processing finds the staff lines, crops out each line (system), enlarges it, and counts its bars from the barlines. A page that can't be split is read whole, in one pass.
+3. **Transcribe lines:** a larger model reads every line of every page in parallel, bar by bar.
+4. **Convert to notes:** code joins the lines of all pages in order, turns them into timed notes, and writes one `output.mid`.
 
 ### Each line is checked and re-read
 
@@ -57,12 +57,13 @@ You need Python 3.10 or newer, a Unix shell, and an OpenAI API key.
 ```sh
 cp .env.example .env          # then put your OPENAI_API_KEY in .env
 ./generate-midi.sh path/to/sheet.png
+./generate-midi.sh page1.png page2.png page3.png   # a multi-page piece
 ```
 
 - **First run:** the script creates `.venv` and installs `requirements.txt`.
 - **Output:** each run writes `output.mid` and a diagram of the pipeline, `graph.png`, to the current directory.
 - **Run time:** a full run usually takes several minutes, and progress is logged as each line finishes.
-- **Pages:** each run reads one image, so a multi-page piece needs one run per page.
+- **Pages:** pass one image per page, in playing order; they become a single `output.mid`. The layout (staves, tempo, starting time signature) is read from the first page only, so every page must use the same staves. The pages' lines are all transcribed in parallel, so a long piece sends many model requests at once.
 
 ### Configuration
 
