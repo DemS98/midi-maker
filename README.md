@@ -1,6 +1,6 @@
 # midi-maker
 
-Turns a photo or scan of printed sheet music into a MIDI file.
+Turns a photo, scan, or PDF of printed sheet music into a MIDI file.
 
 midi-maker is a [LangGraph](https://github.com/langchain-ai/langgraph) pipeline built around OpenAI vision models. It is experimental. Expect wrong notes, especially on small or blurry images.
 
@@ -8,7 +8,7 @@ midi-maker is a [LangGraph](https://github.com/langchain-ai/langgraph) pipeline 
 
 ```mermaid
 flowchart LR
-    img["Sheet images<br/>(one per page)"] --> layout["Read layout<br/>(model, first page)"]
+    img["Sheet images or PDFs<br/>(one image per page)"] --> layout["Read layout<br/>(model, first page)"]
     layout -->|"not sheet music"| stop(["Stop"])
     layout --> split["Split pages into lines<br/>(image processing)"]
     split --> l1["Transcribe line 1<br/>(model)"]
@@ -19,6 +19,8 @@ flowchart LR
     ln --> render
     render --> out[("output.mid")]
 ```
+
+PDFs are first rendered to one image per page. Then:
 
 1. **Read layout:** a small model looks at the first page and reports the tempo, the time signature, and the staves of each line, with their clefs and instruments. These apply to every page.
 2. **Split into lines:** on each page, image processing finds the staff lines, crops out each line (system), enlarges it, and counts its bars from the barlines. A page that can't be split is read whole, in one pass.
@@ -57,13 +59,14 @@ You need Python 3.10 or newer, a Unix shell, and an OpenAI API key.
 ```sh
 cp .env.example .env          # then put your OPENAI_API_KEY in .env
 ./generate-midi.sh path/to/sheet.png
+./generate-midi.sh path/to/score.pdf             # every page of the PDF
 ./generate-midi.sh page1.png page2.png page3.png   # a multi-page piece
 ```
 
-- **First run:** the script creates `.venv` and installs `requirements.txt`.
+- **First run:** the script creates `.venv` and installs `requirements.txt`. It doesn't install them again after that, so if you pull a change that adds requirements, run `.venv/bin/pip install -r requirements.txt`.
 - **Output:** each run writes `output.mid` and a diagram of the pipeline, `graph.png`, to the current directory.
 - **Run time:** a full run usually takes several minutes, and progress is logged as each line finishes.
-- **Pages:** pass one image per page, in playing order; they become a single `output.mid`. The layout (staves, tempo, starting time signature) is read from the first page only, so every page must use the same staves. The pages' lines are all transcribed in parallel, so a long piece sends many model requests at once.
+- **Pages:** pass one image per page, or PDFs, in playing order; they become a single `output.mid`. You can mix the two: every page of a PDF is used, in order. The layout (staves, tempo, starting time signature) is read from the first page only, so every page must use the same staves. The pages' lines are all transcribed in parallel, so a long piece sends many model requests at once.
 
 ### Configuration
 
@@ -83,6 +86,7 @@ Set these environment variables in `.env` or in your shell:
 - **Supported:** treble, bass, alto and tenor clefs; key and time signature changes; accidentals; ties; tuplets; dotted notes; up to two voices per staff; repeats and 1st/2nd endings; dynamics; octave lines; up to 15 staves per line.
 - **Not supported:** drum notation (it plays as pitched notes), grace notes, D.C./D.S./coda jumps, tempo changes within the piece, articulations and ornaments.
 - **Image quality:** clean scans with large staves work best. On small, low-resolution images (around 500 px wide), the model often misreads pitches even when it gets the rhythm and bar structure right.
+- **PDFs:** each page is rendered to an image. A scanned page keeps the scan's own resolution, so a PDF of scans is read exactly like the same scans given as image files. A page exported from notation software (vector graphics) is rendered so that staff lines are about 16 px apart, which is sharper than an enlarged small image. Password-protected PDFs can't be opened.
 
 ## Project layout
 
@@ -90,6 +94,7 @@ Set these environment variables in `.env` or in your shell:
 generate-midi.sh     Entry point: sets up .venv and runs the pipeline
 src/agent/
   graph.py           The pipeline steps and how they connect
+  pages.py           Loads the input files; renders PDF pages to images
   imaging.py         Staff detection, line splitting, barline counting
   notation.py        Transcription checks, and conversion to timed notes
   prompts.py         Instructions given to the models
