@@ -213,11 +213,11 @@ class _Sounding:
 
 def to_score(layout: PageLayout, systems: list[SystemTranscription]) -> tuple[music.Score, list[str]]:
     """
-    Resolve a page transcription into absolute MIDI notes.
+    Resolve the transcribed lines of all pages into absolute MIDI notes.
 
     Args:
         layout: The page overview (tempo, starting time signature, staves).
-        systems: Transcribed lines, top to bottom.
+        systems: Transcribed lines in reading order, across all pages.
 
     Returns:
         The score, and warnings about anything that had to be skipped.

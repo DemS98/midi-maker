@@ -8,9 +8,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from . import config
-from .imaging import LineImage, encode_png, load_page, split_systems
+from .imaging import encode_png, load_page, split_systems
 from .llm import get_llm
-from .models import AgentState, LineTask
+from .models import AgentState, Line, LineTask
 from .models.transcription import PageLayout, SystemTranscription
 from .notation import check_system, describe_system, to_score
 from .prompts import LAYOUT_PROMPT, RETRY_PROMPT, TRANSCRIBE_PROMPT, VERIFY_PROMPT
@@ -43,14 +43,18 @@ def _save_debug(name: str, content: str | bytes) -> None:
 async def read_layout(state: AgentState):
     if config.DEBUG_DIR:
         logger.info("Saving debug files to %s.", config.DEBUG_DIR)
-    logger.info("Reading the page layout with %s...", config.COST_SAVING_MODEL)
+    first = state["pages"][0]
+    logger.info(
+        "Reading the page layout%s with %s...",
+        " from the first page" if len(state["pages"]) > 1 else "", config.COST_SAVING_MODEL,
+    )
     start = time.monotonic()
     reader = get_llm(config.COST_SAVING_MODEL).with_structured_output(PageLayout, strict=True)
     layout = await reader.ainvoke([
         SystemMessage(content=LAYOUT_PROMPT),
         HumanMessage(content=[
             {"type": "text", "text": "Report the layout of this page."},
-            _image(state["mime_type"], state["sheet"]),
+            _image(first["mime_type"], first["image"]),
         ]),
     ])
     _save_debug("layout.json", layout.model_dump_json(indent=2))
@@ -69,55 +73,85 @@ async def read_layout(state: AgentState):
 
 
 def is_music_sheet(state: AgentState) -> str:
-    return "split_page" if state["layout"].is_music_sheet else END
+    return "split_pages" if state["layout"].is_music_sheet else END
 
 
-def split_page(state: AgentState):
-    lines = split_systems(state["sheet"], len(state["layout"].staves))
-    if lines is None:
-        logger.warning("Couldn't split the page into lines; reading it whole.")
-        page = encode_png(load_page(state["sheet"]))
-        return {"lines": [LineImage(page, None)], "whole_page": True}
-    bars = [line.bars if line.bars is not None else "?" for line in lines]
-    logger.info("Split the page into %d lines; bars counted from barlines: %s.", len(lines), bars)
-    return {"lines": lines, "whole_page": False}
+def split_pages(state: AgentState):
+    staves_per_system = len(state["layout"].staves)
+    page_count = len(state["pages"])
+    lines: list[Line] = []
+    for number, page in enumerate(state["pages"]):
+        name = "the page" if page_count == 1 else f"page {number + 1}/{page_count}"
+        found = split_systems(page["image"], staves_per_system)
+        if found is None:
+            logger.warning("Couldn't split %s into lines; reading it whole.", name)
+            whole = encode_png(load_page(page["image"]))
+            lines.append(Line(page=number, index=0, count=1, image=whole, bars=None, whole_page=True))
+            continue
+        bars = [line.bars if line.bars is not None else "?" for line in found]
+        logger.info("Split %s into %d lines; bars counted from barlines: %s.", name, len(found), bars)
+        lines += [
+            Line(page=number, index=index, count=len(found), image=line.image, bars=line.bars, whole_page=False)
+            for index, line in enumerate(found)
+        ]
+    return {"lines": lines}
 
 
 def read_each_line(state: AgentState) -> list[Send]:
-    count = len(state["lines"])
+    lines, page_count = state["lines"], len(state["pages"])
+    count = len(lines)
+    if all(line.whole_page for line in lines):
+        what = "the whole page" if page_count == 1 else f"{page_count} whole pages in parallel"
+    else:
+        what = "1 line" if count == 1 else f"{count} lines"
+        if page_count > 1:
+            what += f" from {page_count} pages"
+        if count > 1:
+            what += " in parallel"
     logger.info(
         "Transcribing %s with %s (%s reasoning, up to %d attempts per line)...",
-        "the whole page" if state["whole_page"] else "1 line" if count == 1 else f"{count} lines in parallel",
-        config.BEST_MODEL, config.REASONING_EFFORT, config.MAX_RETRIES + 1,
+        what, config.BEST_MODEL, config.REASONING_EFFORT, config.MAX_RETRIES + 1,
     )
     return [
-        Send("transcribe_line", LineTask(
-            index=index,
-            image=line.image,
-            bars=line.bars,
-            layout=state["layout"],
-            line_count=count,
-            whole_page=state["whole_page"],
-        ))
-        for index, line in enumerate(state["lines"])
+        Send("transcribe_line", LineTask(order=order, line=line, page_count=page_count, layout=state["layout"]))
+        for order, line in enumerate(lines)
     ]
 
 
+def _line_label(task: LineTask) -> str:
+    """How log messages name the line: "Line 2/4" on a single page, "Page 3/5, line 2/4" otherwise."""
+    line = task["line"]
+    page = f"Page {line.page + 1}/{task['page_count']}" if task["page_count"] > 1 else "Page"
+    if line.whole_page:
+        return page
+    where = f"line {line.index + 1}/{line.count}"
+    return f"{page}, {where}" if task["page_count"] > 1 else where.capitalize()
+
+
+def _debug_name(task: LineTask) -> str:
+    """Prefix of the line's debug files: "line2" on a single page, "page3_line2" otherwise."""
+    line = task["line"]
+    name = f"line{line.index + 1}"
+    return f"page{line.page + 1}_{name}" if task["page_count"] > 1 else name
+
+
 def _line_context(task: LineTask) -> str:
-    layout = task["layout"]
+    layout, line = task["layout"], task["line"]
     staves = "; ".join(f"{i}. {s.name} ({s.clef} clef)" for i, s in enumerate(layout.staves, start=1))
     meter = layout.time_signature
-    if task["whole_page"]:
+    page = f"page {line.page + 1} of {task['page_count']}" if task["page_count"] > 1 else "the page"
+    if line.whole_page:
         where = (
-            "This image is the whole page: it could not be split into lines. Transcribe every bar of "
-            "every line in reading order as one sequence, numbering the bars from 1."
+            f"This image is {'the whole page' if task['page_count'] == 1 else f'all of {page}'}: it could not "
+            "be split into lines. Transcribe every bar of every line in reading order as one sequence, "
+            "numbering the bars from 1."
         )
     else:
-        where = f"This image is line {task['index'] + 1} of {task['line_count']} on the page, enlarged."
-        if task["index"] == 0:
+        where = f"This image is line {line.index + 1} of {line.count} on {page}, enlarged."
+        if task["order"] == 0:
             where += (
-                " It is the first line: its first bar may be a pickup, and if the time signature printed "
-                f"at its start isn't {meter.numerator}/{meter.denominator}, set time_change on bar 1."
+                " It is the first line of the piece: its first bar may be a pickup, and if the time signature "
+                f"printed at its start isn't {meter.numerator}/{meter.denominator}, set time_change on bar 1."
             )
     return "\n".join([
         where,
@@ -137,13 +171,13 @@ def _changed_bars(before: SystemTranscription, after: SystemTranscription) -> li
 
 
 async def transcribe_line(task: LineTask):
-    layout, index = task["layout"], task["index"]
+    layout, line_image = task["layout"], task["line"].image
     staff_names = [s.name for s in layout.staves]
-    label = "Page" if task["whole_page"] else f"Line {index + 1}/{task['line_count']}"
+    label, debug_name = _line_label(task), _debug_name(task)
     context = _line_context(task)
-    image = _image("image/png", task["image"])
+    image = _image("image/png", line_image)
     reader = get_llm(config.BEST_MODEL).with_structured_output(SystemTranscription, strict=True)
-    _save_debug(f"line{index + 1}.png", b64decode(task["image"]))
+    _save_debug(f"{debug_name}.png", b64decode(line_image))
     started = time.monotonic()
 
     # Read, check, and re-read with the problems spelled out until the line passes the checks.
@@ -158,9 +192,9 @@ async def transcribe_line(task: LineTask):
         line = await reader.ainvoke(messages)
         # The barline count is never shown up front (the model would anchor on it). A mismatch only
         # asks for a recount: barline detection can be wrong too, so a model that keeps its count wins.
-        expected = task["bars"] if attempt == 1 else None
+        expected = task["line"].bars if attempt == 1 else None
         errors = check_system(line, layout.time_signature, staff_names, expected)
-        _save_debug(f"line{index + 1}_attempt{attempt}.json", line.model_dump_json(indent=2))
+        _save_debug(f"{debug_name}_attempt{attempt}.json", line.model_dump_json(indent=2))
         if best is None or len(errors) < len(best_errors):
             best, best_errors, best_attempt = line, errors, attempt
 
@@ -196,7 +230,7 @@ async def transcribe_line(task: LineTask):
                 image,
             ]),
         ])
-        _save_debug(f"line{index + 1}_proofread.json", proofread.model_dump_json(indent=2))
+        _save_debug(f"{debug_name}_proofread.json", proofread.model_dump_json(indent=2))
         changed = _changed_bars(best, proofread)
         took = elapsed(proofread_start)
         if changed == []:
@@ -215,10 +249,11 @@ async def transcribe_line(task: LineTask):
         "%s: done in %s, %d bars%s.", label, elapsed(started), len(best.measures),
         f"; bars {uncertain} were hard to read" if uncertain else "",
     )
-    return {"transcriptions": [(index, best)]}
+    return {"transcriptions": [(task["order"], best)]}
 
 
 def render_midi(state: AgentState):
+    # Lines of all pages in reading order, so the pages play one after another as one piece.
     lines = [line for _, line in sorted(state["transcriptions"], key=lambda item: item[0])]
     score, warnings = to_score(state["layout"], lines)
     for warning in warnings:
@@ -232,13 +267,13 @@ def get_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
     graph.add_node("read_layout", read_layout)
-    graph.add_node("split_page", split_page)
+    graph.add_node("split_pages", split_pages)
     graph.add_node("transcribe_line", transcribe_line)
     graph.add_node("render_midi", render_midi)
 
     graph.add_edge(START, "read_layout")
-    graph.add_conditional_edges("read_layout", is_music_sheet, ["split_page", END])
-    graph.add_conditional_edges("split_page", read_each_line, ["transcribe_line"])
+    graph.add_conditional_edges("read_layout", is_music_sheet, ["split_pages", END])
+    graph.add_conditional_edges("split_pages", read_each_line, ["transcribe_line"])
     graph.add_edge("transcribe_line", "render_midi")
     graph.add_edge("render_midi", END)
 

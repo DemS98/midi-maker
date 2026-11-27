@@ -1,3 +1,3 @@
-from .state import AgentState, LineTask
+from .state import AgentState, Line, LineTask, Page
 
 from . import music, transcription
