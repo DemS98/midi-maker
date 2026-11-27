@@ -35,6 +35,7 @@ pillow==12.3.0
 pydantic==2.12.5
 pydantic_core==2.41.5
 pyparsing==3.3.2
+pypdfium2==5.15.2
 python-dotenv==1.2.2
 ./python-midi
 PyYAML==6.0.3

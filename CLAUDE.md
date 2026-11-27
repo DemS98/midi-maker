@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An agent that turns a photo or scan of printed sheet music into a MIDI file. It is a LangGraph pipeline (`src/agent/`) that uses OpenAI vision models through `langchain_openai`. It writes MIDI with `python-midi/`, a copy of the `python-midi` library (imported as `midi`) that is kept in this repo.
+An agent that turns a photo, scan, or PDF of printed sheet music into a MIDI file. It is a LangGraph pipeline (`src/agent/`) that uses OpenAI vision models through `langchain_openai`. It writes MIDI with `python-midi/`, a copy of the `python-midi` library (imported as `midi`) that is kept in this repo.
 
 ## Commands
 
@@ -13,11 +13,12 @@ Run everything from the repo root. The code imports `src.agent...`, and output p
 ```sh
 ./generate-midi.sh path/to/sheet.png   # full run; creates .venv and installs requirements.txt the first time
 ./generate-midi.sh p1.png p2.png       # several pages, in order, joined into one output.mid
+./generate-midi.sh score.pdf           # every page of a PDF; images and PDFs can be mixed
 ```
 
 - A run writes `output.mid` (`tools.OUTPUT_PATH`) and redraws `graph.png` (a Mermaid render of the graph, gitignored) in the current directory. A full run takes several minutes at `high` reasoning effort.
 - It needs `OPENAI_API_KEY` in `.env`; `.env.example` is the template. The Claude settings block reads of `.env`, so leave that file alone.
-- The repo contains no sample sheet images. Bring your own image to test with.
+- `test/` holds one sample, Wonderwall (piano, 7 pages, about 6 px staff spacing): `wonderwall1-7.png`, the same pages as `wonderwall.pdf` (a PDF of scans, which renders pixel-identical to the PNGs), and `output.mid` from an earlier run.
 - The settings in `src/agent/config.py` can be overridden with environment variables or `.env`:
   - `MIDI_AGENT_MODEL` / `MIDI_AGENT_MODEL_CHEAP`: model names
   - `MIDI_AGENT_REASONING_EFFORT`: reasoning effort
@@ -30,6 +31,7 @@ Run everything from the repo root. The code imports `src.agent...`, and output p
   print([l.bars for l in split_systems(b64encode(open('sheet.png','rb').read()).decode(), 2)])"
   ```
   The `2` is the number of staves per system (2 for a piano grand staff). The output is the bar count of each line, with `None` where the bars couldn't be counted.
+  For a PDF, get the pages first with `from src.agent.pages import read_pages; pages = read_pages(['score.pdf'])`, then pass each `page['image']` to `split_systems`.
   `notation.check_system` / `notation.to_score` are pure functions over the pydantic models, so you can test them the same way.
 - The main app has no test suite and no linter configured.
 
@@ -45,7 +47,11 @@ Run everything from the repo root. The code imports `src.agent...`, and output p
 
 ### Graph (`src/agent/graph.py`)
 
-The input is `AgentState.pages`, a list of `{image, mime_type}` (base64), one per page in playing order.
+The input is `AgentState.pages`, a list of `{image, mime_type}` (base64), one per page in playing order. `pages.read_pages` builds it from the files given on the command line, so the graph only ever sees images:
+
+- An image file is one page.
+- Each PDF page is rendered with `pypdfium2` to a grayscale PNG. A scan (a raster image covering at least a quarter of the page) is rendered at that image's own resolution. A vector page is rendered at the dpi that puts its staff spacing at `imaging.TARGET_STAFF_SPACING`, measured on a 150 dpi probe render, or at 200 dpi if no staves are found. Both are capped at `imaging.MAX_WIDTH` px wide.
+- Don't render PDFs at a fixed high dpi. `find_staves` detects staff lines as ridges 2 px away from their neighbours, so lines 4 px thick or more disappear, and a fixed 600 dpi render made splitting fail.
 
 1. **`read_layout`**: one call to the cheap model with the **first page only**; the layout applies to every page. It returns `PageLayout`: whether the image is music, tempo, starting meter, and the staves of one system with their clefs and GM programs. If the image is not music, the graph ends here.
 2. **`split_pages`**: deterministic, in `imaging.split_systems` run on each page, with no model involved. It produces one flat `lines: list[Line]` in reading order; each `Line` records its page, its index on the page, and `whole_page`.

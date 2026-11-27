@@ -3,9 +3,11 @@
 set -e
 
 help() {
-    echo "./generate-midi.sh sheet-image [more-pages...]"
+    echo "./generate-midi.sh sheet-file [more-files...]"
+    echo "Each file is an image (one page) or a PDF (all of its pages)."
     echo "Pages are read in the order given and joined into one MIDI file."
-    echo "Example: ./generate-midi.sh bach-page1.png bach-page2.png"
+    echo "Examples: ./generate-midi.sh bach.pdf"
+    echo "          ./generate-midi.sh bach-page1.png bach-page2.png"
 }
 
 init() {
@@ -32,10 +34,9 @@ import asyncio
 import logging
 import sys
 import time
-from base64 import b64encode
-from mimetypes import MimeTypes
 
 from src.agent.graph import elapsed, get_graph
+from src.agent.pages import read_pages
 
 logger = logging.getLogger(__name__)
 
@@ -49,20 +50,15 @@ async def main(files: list[str]):
     for name in (__name__, "src.agent"):
         logging.getLogger(name).setLevel(logging.INFO)
 
+    try:
+        pages = read_pages(files)
+    except (OSError, ValueError) as error:
+        logger.error("%s", error)
+        return
+
     graph = get_graph().compile()
 
     graph.get_graph().draw_mermaid_png(output_file_path="graph.png")
-
-    mimes = [MimeTypes().guess_type(file)[0] for file in files]
-    not_images = [file for file, mime in zip(files, mimes) if not mime or not mime.startswith("image/")]
-    if not_images:
-        logger.error("Not an image: %s", ", ".join(not_images))
-        return
-
-    pages = []
-    for file, mime in zip(files, mimes):
-        with open(file, "rb") as image_file:
-            pages.append({"image": b64encode(image_file.read()).decode("utf-8"), "mime_type": mime})
 
     start = time.monotonic()
     lines_total, lines_done = None, 0
